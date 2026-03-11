@@ -1,0 +1,217 @@
+from src.db.database import SessionLocal
+from src.db.models import Lease, LeaseAnalytics
+from src.vector.vector_store import create_vector_store
+import json
+import logging
+from datetime import datetime, timedelta
+from sqlalchemy import func
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_iso_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _infer_expense_structure(lease_type, pass_through):
+    lt = (lease_type or "").lower()
+    pt = (pass_through or "").lower()
+
+    if "absolute" in lt and "nnn" in lt:
+        return "Absolute NNN"
+    if "triple" in lt or "nnn" in lt or "nnn" in pt:
+        return "Triple Net (NNN)"
+    if "modified" in lt:
+        return "Modified Gross"
+    if "full service" in lt or "gross" in pt:
+        return "Full Service"
+    if "base year" in pt:
+        return "Base Year"
+    if "expense stop" in pt:
+        return "Expense Stop"
+    return "Unknown"
+
+
+def _compute_risk_score(data):
+    financial = data.get("financialTerms") or {}
+    options = data.get("options") or {}
+    risk_flags = data.get("riskFlags") or {}
+
+    score = 0.0
+
+    if not options.get("hasRenewalOption", False):
+        score += 0.35
+    if options.get("hasTerminationOption", False):
+        score += 0.2
+    if not financial.get("securityDeposit"):
+        score += 0.15
+    if not data.get("parties", {}).get("isGuaranteed", False):
+        score += 0.1
+    if not risk_flags.get("sndaInPlace", False):
+        score += 0.1
+    if risk_flags.get("coTenancyClause", False):
+        score += 0.05
+    if risk_flags.get("exclusiveUseClause", False):
+        score += 0.05
+
+    return round(min(score, 1.0), 2)
+
+
+def _next_int_id(db, model):
+    """Generate next integer primary key explicitly for Snowflake tables without identity defaults."""
+    current_max = db.query(func.max(model.id)).scalar()
+    if current_max is None:
+        return 1
+    return int(current_max) + 1
+
+
+def analytics_agent(state: dict):
+
+    data = state.get("structured_data", {})
+    raw_text = state.get("raw_text", "")
+
+    # ---------------------------
+    # Safe extraction
+    # ---------------------------
+
+    lease_identification = data.get("leaseIdentification") or {}
+    parties = data.get("parties") or {}
+    premises = data.get("premises") or {}
+    lease_term = data.get("leaseTerm") or {}
+    financial = data.get("financialTerms") or {}
+    options = data.get("options") or {}
+
+    base_schedule = financial.get("baseRentSchedule") or []
+
+    first_year_rent = None
+    if isinstance(base_schedule, list) and len(base_schedule) > 0:
+        first_year_rent = _safe_float(base_schedule[0].get("annualBaseRent"), None)
+
+    if first_year_rent is None:
+        first_year_rent = _safe_float(financial.get("annualBaseRent"), None)
+
+    rentable_sf = _safe_float(premises.get("rentableSquareFeet"), None)
+
+    effective_rent_psf = None
+    if first_year_rent and rentable_sf and rentable_sf > 0:
+        effective_rent_psf = round(first_year_rent / rentable_sf, 2)
+
+    expiration_dt = _parse_iso_date(lease_term.get("expirationDate"))
+    renewal_notice_days = options.get("renewalNoticePeriodDays")
+    renewal_notice_days = int(renewal_notice_days) if renewal_notice_days is not None else None
+
+    renewal_option_deadline_date = None
+    if expiration_dt and renewal_notice_days:
+        renewal_option_deadline_date = (expiration_dt - timedelta(days=renewal_notice_days)).strftime("%Y-%m-%d")
+
+    expense_recovery_structure = _infer_expense_structure(
+        lease_identification.get("leaseType"),
+        financial.get("operatingExpensePassThrough"),
+    )
+
+    # ---------------------------
+    # Renewal Risk Calculation
+    # ---------------------------
+
+    renewal_risk_score = _compute_risk_score(data)
+
+    state["analytics_result"] = {
+        "lease_id": state.get("lease_id"),
+        "effective_rent_psf": effective_rent_psf,
+        "expense_recovery_structure": expense_recovery_structure,
+        "tenant_pro_rata_share": _safe_float(financial.get("proRataShare"), None),
+        "renewal_option_deadline_date": renewal_option_deadline_date,
+        "termination_option_deadline_date": None,
+        "has_renewal_option": options.get("hasRenewalOption", False),
+        "has_termination_option": options.get("hasTerminationOption", False),
+        "renewal_option_rent_basis": options.get("renewalRentBasis"),
+        "renewal_risk_score": renewal_risk_score,
+    }
+
+    # Keep derived KPI payload attached to structured data for downstream APIs and reporting.
+    data["derivedAnalytics"] = state["analytics_result"]
+
+    # ---------------------------
+    # Save to Database
+    # ---------------------------
+
+    db = SessionLocal()
+
+    lease = Lease(
+        id=_next_int_id(db, Lease),
+        tenant_name=parties.get("tenantName"),
+        region=premises.get("propertyAddress"),
+        base_rent=first_year_rent,
+        escalation_percent=_safe_float(financial.get("rentEscalationPercent"), None),
+        renewal_years=_safe_float(options.get("renewalTermYears"), None),
+        deviation_score=0.0,
+        renewal_risk_score=renewal_risk_score,
+        structured_data=json.dumps(data),
+        raw_text=raw_text
+    )
+
+    db.add(lease)
+    db.commit()
+    db.refresh(lease)
+
+    lease_id_value = int(lease.id)
+    state["lease_id"] = lease_id_value
+
+    # Persist warehouse-style analytics record for portfolio-level reporting.
+    analytics_row = LeaseAnalytics(
+        id=_next_int_id(db, LeaseAnalytics),
+        lease_id=lease_id_value,
+        property_id=premises.get("propertyId"),
+        lease_uid=lease_identification.get("leaseId"),
+        parent_tenant_id=parties.get("parentTenantId"),
+        market=premises.get("market"),
+        effective_rent_psf=effective_rent_psf,
+        tenant_improvement_allowance=_safe_float(financial.get("tenantImprovementAllowance"), None),
+        expense_recovery_structure=expense_recovery_structure,
+        tenant_pro_rata_share=_safe_float(financial.get("proRataShare"), None),
+        expiration_date=lease_term.get("expirationDate"),
+        renewal_option_deadline_date=renewal_option_deadline_date,
+        termination_option_deadline_date=None,
+        has_renewal_option=str(bool(options.get("hasRenewalOption", False))).lower(),
+        renewal_option_rent_basis=options.get("renewalRentBasis"),
+        has_termination_option=str(bool(options.get("hasTerminationOption", False))).lower(),
+        co_tenancy_clause=str(bool((data.get("riskFlags") or {}).get("coTenancyClause", False))).lower(),
+        exclusive_use_clause=str(bool((data.get("riskFlags") or {}).get("exclusiveUseClause", False))).lower(),
+        snda_in_place=str(bool((data.get("riskFlags") or {}).get("sndaInPlace", False))).lower(),
+        renewal_risk_score=renewal_risk_score,
+    )
+
+    db.add(analytics_row)
+    db.commit()
+
+    db.close()
+
+    state["analytics_result"]["lease_id"] = lease_id_value
+
+    # ---------------------------
+    # Create Vector Store
+    # ---------------------------
+    try:
+        create_vector_store(lease_id_value, raw_text)
+        state.setdefault("execution_log", []).append(f"Vector store created for lease {lease_id_value}")
+    except Exception as exc:
+        logger.error("Vector store creation failed for lease %s: %s", lease_id_value, exc)
+        state.setdefault("execution_log", []).append(f"Vector store creation failed: {exc}")
+
+    state.setdefault("execution_log", []).append("Analytics agent completed")
+
+    return state

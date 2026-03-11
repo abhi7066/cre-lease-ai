@@ -1,0 +1,26 @@
+import axios from "axios";
+
+const API = axios.create({
+  baseURL: "http://127.0.0.1:8000"
+});
+
+export const getPortfolio = () =>
+  API.get("/portfolio/summary");
+
+export const getPortfolioAnalytics = () =>
+  API.get("/analytics/portfolio");
+
+export const askPortfolioQuestion = (payload) =>
+  API.post("/chat/portfolio", payload);
+
+export const getAllLeaseAnalytics = () =>
+  API.get("/analytics/leases");
+
+export const getPresignedUrl = (filename) =>
+  API.get("/upload/presigned", { params: { filename } });
+
+export const triggerProcessing = (files) =>
+  API.post("/upload/process", { files });
+
+export const getJobStatus = (jobId) =>
+  API.get(`/upload/process/${jobId}`);

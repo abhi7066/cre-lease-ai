@@ -1,0 +1,36 @@
+# CRE Lease Abstraction AI System - Dependencies
+
+# Snowflake
+snowflake-sqlalchemy>=1.6.0
+snowflake-connector-python>=3.10.0
+python-dotenv>=1.0.0
+
+# Core dependencies
+openai>=1.12.0
+python-dateutil>=2.8.2
+
+# PDF processing
+pdfplumber>=0.10.0
+PyPDF2>=3.0.0
+PyMuPDF>=1.23.0  # fitz for PDF rendering
+
+# OCR support
+pytesseract>=0.3.10
+pdf2image>=1.16.3
+Pillow>=10.0.0
+
+# Data processing
+pandas>=2.0.0  # For CSV export
+fastapi
+python-multipart
+uvicorn
+langgraph
+langchain
+langchain-openai
+sqlalchemy
+langchain-community
+langchain_text_splitters
+faiss-cpu
+chromadb
+reportlab
+boto3>=1.34.0
