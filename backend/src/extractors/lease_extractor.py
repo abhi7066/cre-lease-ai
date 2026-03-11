@@ -37,16 +37,20 @@ class LeaseExtractor:
         """Returns the expected JSON schema structure."""
         return {
             "leaseIdentification": {
+                "leaseId": None,
                 "leaseExecutionDate": None,
                 "leaseType": None
             },
             "parties": {
                 "landlordName": None,
                 "tenantName": None,
+                "parentTenantId": None,
                 "guarantorName": None,
                 "isGuaranteed": False
             },
             "premises": {
+                "propertyId": None,
+                "market": None,
                 "propertyAddress": None,
                 "premisesDescription": None,
                 "rentableSquareFeet": None
@@ -58,16 +62,19 @@ class LeaseExtractor:
             },
             "financialTerms": {
                 "baseRentSchedule": [],
+                "annualBaseRent": None,
                 "rentEscalationType": None,
                 "securityDeposit": None,
                 "proRataShare": None,
+                "tenantImprovementAllowance": None,
                 "operatingExpensePassThrough": None
             },
             "options": {
                 "hasRenewalOption": False,
                 "renewalNoticePeriodDays": None,
                 "renewalRentBasis": None,
-                "hasTerminationOption": False
+                "hasTerminationOption": False,
+                "terminationNoticePeriodDays": None
             },
             "riskFlags": {
                 "coTenancyClause": False,

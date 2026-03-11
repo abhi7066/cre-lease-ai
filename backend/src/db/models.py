@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text
+from sqlalchemy import Column, Integer, String, Float, Text, Sequence
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -7,7 +7,7 @@ Base = declarative_base()
 class Lease(Base):
     __tablename__ = "LEASES"  # uppercase — Snowflake stores unquoted identifiers in uppercase
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, Sequence("LEASES_ID_SEQ"), primary_key=True)
 
     tenant_name = Column(String)
     region = Column(String)
@@ -27,7 +27,7 @@ class Lease(Base):
 class LeaseAnalytics(Base):
     __tablename__ = "LEASE_ANALYTICS"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, Sequence("LEASE_ANALYTICS_ID_SEQ"), primary_key=True)
     # Avoid unique/index constraints here because standard Snowflake tables
     # do not support SQLAlchemy index DDL in this setup.
     lease_id = Column(Integer)

@@ -80,7 +80,7 @@ function App() {
           <button
             type="button"
             onClick={() => setActivePage("workspace")}
-            className={`w-full rounded-md px-3 py-2 text-left ${
+            className={`w-full cursor-pointer rounded-md px-3 py-2 text-left ${
               activePage === "workspace" ? "bg-slate-900 text-slate-100" : "text-slate-400"
             }`}
           >
@@ -89,7 +89,7 @@ function App() {
           <button
             type="button"
             onClick={() => setActivePage("chat")}
-            className={`w-full rounded-md px-3 py-2 text-left ${
+            className={`w-full cursor-pointer rounded-md px-3 py-2 text-left ${
               activePage === "chat" ? "bg-slate-900 text-slate-100" : "text-slate-400"
             }`}
           >
@@ -98,7 +98,7 @@ function App() {
           <button
             type="button"
             onClick={() => setActivePage("analytics")}
-            className={`w-full rounded-md px-3 py-2 text-left ${
+            className={`w-full cursor-pointer rounded-md px-3 py-2 text-left ${
               activePage === "analytics" ? "bg-slate-900 text-slate-100" : "text-slate-400"
             }`}
           >

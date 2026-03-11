@@ -4,7 +4,6 @@ from src.vector.vector_store import create_vector_store
 import json
 import logging
 from datetime import datetime, timedelta
-from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +17,13 @@ def _safe_float(value, default=None):
         return default
 
 
+def _first_present(*values):
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _parse_iso_date(value):
     if not value:
         return None
@@ -25,6 +31,25 @@ def _parse_iso_date(value):
         return datetime.strptime(str(value), "%Y-%m-%d")
     except ValueError:
         return None
+
+
+def _coerce_notice_days(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_deadline_date(anchor_date, notice_days):
+    parsed_anchor = _parse_iso_date(anchor_date)
+    parsed_notice_days = _coerce_notice_days(notice_days)
+
+    if not parsed_anchor or parsed_notice_days is None:
+        return None
+
+    return (parsed_anchor - timedelta(days=parsed_notice_days)).strftime("%Y-%m-%d")
 
 
 def _infer_expense_structure(lease_type, pass_through):
@@ -71,14 +96,6 @@ def _compute_risk_score(data):
     return round(min(score, 1.0), 2)
 
 
-def _next_int_id(db, model):
-    """Generate next integer primary key explicitly for Snowflake tables without identity defaults."""
-    current_max = db.query(func.max(model.id)).scalar()
-    if current_max is None:
-        return 1
-    return int(current_max) + 1
-
-
 def analytics_agent(state: dict):
 
     data = state.get("structured_data", {})
@@ -99,10 +116,19 @@ def analytics_agent(state: dict):
 
     first_year_rent = None
     if isinstance(base_schedule, list) and len(base_schedule) > 0:
-        first_year_rent = _safe_float(base_schedule[0].get("annualBaseRent"), None)
+        first_year_rent = _safe_float(
+            _first_present(
+                base_schedule[0].get("annualBaseRent"),
+                base_schedule[0].get("annualRent"),
+            ),
+            None,
+        )
 
     if first_year_rent is None:
-        first_year_rent = _safe_float(financial.get("annualBaseRent"), None)
+        first_year_rent = _safe_float(
+            _first_present(financial.get("annualBaseRent"), financial.get("annualRent")),
+            None,
+        )
 
     rentable_sf = _safe_float(premises.get("rentableSquareFeet"), None)
 
@@ -110,13 +136,21 @@ def analytics_agent(state: dict):
     if first_year_rent and rentable_sf and rentable_sf > 0:
         effective_rent_psf = round(first_year_rent / rentable_sf, 2)
 
-    expiration_dt = _parse_iso_date(lease_term.get("expirationDate"))
-    renewal_notice_days = options.get("renewalNoticePeriodDays")
-    renewal_notice_days = int(renewal_notice_days) if renewal_notice_days is not None else None
+    expiration_date = _first_present(
+        lease_term.get("expirationDate"),
+        data.get("expirationDate"),
+        data.get("lease_end_date"),
+        (data.get("leaseDates") or {}).get("expirationDate"),
+    )
 
-    renewal_option_deadline_date = None
-    if expiration_dt and renewal_notice_days:
-        renewal_option_deadline_date = (expiration_dt - timedelta(days=renewal_notice_days)).strftime("%Y-%m-%d")
+    renewal_option_deadline_date = _derive_deadline_date(
+        expiration_date,
+        _first_present(options.get("renewalNoticePeriodDays"), options.get("renewalNoticeDays")),
+    )
+    termination_option_deadline_date = _derive_deadline_date(
+        expiration_date,
+        _first_present(options.get("terminationNoticePeriodDays"), options.get("terminationNoticeDays")),
+    )
 
     expense_recovery_structure = _infer_expense_structure(
         lease_identification.get("leaseType"),
@@ -135,10 +169,10 @@ def analytics_agent(state: dict):
         "expense_recovery_structure": expense_recovery_structure,
         "tenant_pro_rata_share": _safe_float(financial.get("proRataShare"), None),
         "renewal_option_deadline_date": renewal_option_deadline_date,
-        "termination_option_deadline_date": None,
+        "termination_option_deadline_date": termination_option_deadline_date,
         "has_renewal_option": options.get("hasRenewalOption", False),
         "has_termination_option": options.get("hasTerminationOption", False),
-        "renewal_option_rent_basis": options.get("renewalRentBasis"),
+        "renewal_option_rent_basis": _first_present(options.get("renewalRentBasis"), options.get("renewalOptionRentBasis")),
         "renewal_risk_score": renewal_risk_score,
     }
 
@@ -152,7 +186,6 @@ def analytics_agent(state: dict):
     db = SessionLocal()
 
     lease = Lease(
-        id=_next_int_id(db, Lease),
         tenant_name=parties.get("tenantName"),
         region=premises.get("propertyAddress"),
         base_rent=first_year_rent,
@@ -173,21 +206,23 @@ def analytics_agent(state: dict):
 
     # Persist warehouse-style analytics record for portfolio-level reporting.
     analytics_row = LeaseAnalytics(
-        id=_next_int_id(db, LeaseAnalytics),
         lease_id=lease_id_value,
-        property_id=premises.get("propertyId"),
-        lease_uid=lease_identification.get("leaseId"),
-        parent_tenant_id=parties.get("parentTenantId"),
-        market=premises.get("market"),
+        property_id=_first_present(premises.get("propertyId"), data.get("propertyId")),
+        lease_uid=_first_present(lease_identification.get("leaseId"), data.get("leaseId"), data.get("lease_uid")),
+        parent_tenant_id=_first_present(parties.get("parentTenantId"), data.get("parentTenantId")),
+        market=_first_present(premises.get("market"), data.get("market"), data.get("region")),
         effective_rent_psf=effective_rent_psf,
-        tenant_improvement_allowance=_safe_float(financial.get("tenantImprovementAllowance"), None),
+        tenant_improvement_allowance=_safe_float(
+            _first_present(financial.get("tenantImprovementAllowance"), financial.get("tiAllowance")),
+            None,
+        ),
         expense_recovery_structure=expense_recovery_structure,
         tenant_pro_rata_share=_safe_float(financial.get("proRataShare"), None),
-        expiration_date=lease_term.get("expirationDate"),
+        expiration_date=expiration_date,
         renewal_option_deadline_date=renewal_option_deadline_date,
-        termination_option_deadline_date=None,
+        termination_option_deadline_date=termination_option_deadline_date,
         has_renewal_option=str(bool(options.get("hasRenewalOption", False))).lower(),
-        renewal_option_rent_basis=options.get("renewalRentBasis"),
+        renewal_option_rent_basis=_first_present(options.get("renewalRentBasis"), options.get("renewalOptionRentBasis")),
         has_termination_option=str(bool(options.get("hasTerminationOption", False))).lower(),
         co_tenancy_clause=str(bool((data.get("riskFlags") or {}).get("coTenancyClause", False))).lower(),
         exclusive_use_clause=str(bool((data.get("riskFlags") or {}).get("exclusiveUseClause", False))).lower(),

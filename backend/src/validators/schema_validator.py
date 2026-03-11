@@ -78,6 +78,10 @@ class SchemaValidator:
             return errors
         
         section = data["leaseIdentification"]
+
+        lease_id = section.get("leaseId")
+        if lease_id is not None and not isinstance(lease_id, str):
+            errors.append(f"leaseIdentification.leaseId: Must be string or null, got {type(lease_id)}")
         
         # Validate leaseExecutionDate
         is_valid, error = SchemaValidator.validate_date(section.get("leaseExecutionDate"))
@@ -103,7 +107,7 @@ class SchemaValidator:
         section = data["parties"]
         
         # Validate string or null fields
-        for field in ["landlordName", "tenantName", "guarantorName"]:
+        for field in ["landlordName", "tenantName", "parentTenantId", "guarantorName"]:
             value = section.get(field)
             if value is not None and not isinstance(value, str):
                 errors.append(f"parties.{field}: Must be string or null, got {type(value)}")
@@ -127,7 +131,7 @@ class SchemaValidator:
         section = data["premises"]
         
         # Validate string or null fields
-        for field in ["propertyAddress", "premisesDescription"]:
+        for field in ["propertyId", "market", "propertyAddress", "premisesDescription"]:
             value = section.get(field)
             if value is not None and not isinstance(value, str):
                 errors.append(f"premises.{field}: Must be string or null, got {type(value)}")
@@ -204,18 +208,25 @@ class SchemaValidator:
                 if not is_valid:
                     errors.append(f"financialTerms.baseRentSchedule[{i}].endDate: {error}")
                 
-                # Validate numeric fields
-                for field in ["annualRent", "monthlyRent"]:
+                annual_rent = entry.get("annualRent")
+                annual_base_rent = entry.get("annualBaseRent")
+                if annual_rent is None and annual_base_rent is None:
+                    errors.append(
+                        f"financialTerms.baseRentSchedule[{i}]: Must include annualRent or annualBaseRent"
+                    )
+
+                for field in ["annualRent", "annualBaseRent", "monthlyRent"]:
                     value = entry.get(field)
+                    if value is None:
+                        continue
                     if not isinstance(value, (int, float)):
                         errors.append(f"financialTerms.baseRentSchedule[{i}].{field}: Must be number, got {type(value)}")
                     elif value < 0:
                         errors.append(f"financialTerms.baseRentSchedule[{i}].{field}: Cannot be negative")
-                
-                # Validate currency
+
                 currency = entry.get("currency")
-                if not isinstance(currency, str):
-                    errors.append(f"financialTerms.baseRentSchedule[{i}].currency: Must be string")
+                if currency is not None and not isinstance(currency, str):
+                    errors.append(f"financialTerms.baseRentSchedule[{i}].currency: Must be string or null")
         
         # Validate rentEscalationType
         escalation = section.get("rentEscalationType")
@@ -223,7 +234,7 @@ class SchemaValidator:
             errors.append(f"financialTerms.rentEscalationType: Invalid value '{escalation}'")
         
         # Validate numeric or null fields
-        for field in ["securityDeposit", "proRataShare"]:
+        for field in ["securityDeposit", "proRataShare", "tenantImprovementAllowance", "annualBaseRent"]:
             value = section.get(field)
             if value is not None and not isinstance(value, (int, float)):
                 errors.append(f"financialTerms.{field}: Must be number or null, got {type(value)}")
@@ -259,6 +270,12 @@ class SchemaValidator:
         elif days is not None and days < 0:
             errors.append(f"options.renewalNoticePeriodDays: Cannot be negative")
         
+        termination_days = section.get("terminationNoticePeriodDays")
+        if termination_days is not None and not isinstance(termination_days, (int, float)):
+            errors.append(f"options.terminationNoticePeriodDays: Must be number or null, got {type(termination_days)}")
+        elif termination_days is not None and termination_days < 0:
+            errors.append(f"options.terminationNoticePeriodDays: Cannot be negative")
+
         # Validate renewalRentBasis
         basis = section.get("renewalRentBasis")
         if basis not in SchemaValidator.VALID_RENEWAL_RENT_BASIS:
